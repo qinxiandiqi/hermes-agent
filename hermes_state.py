@@ -762,6 +762,7 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
     platform_message_id TEXT,
+    source TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0
@@ -3414,6 +3415,7 @@ class SessionDB:
         platform_message_id: str = None,
         observed: bool = False,
         timestamp: Any = None,
+        source: str = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -3465,8 +3467,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, source, observed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3483,6 +3485,7 @@ class SessionDB:
                     codex_items_json,
                     codex_message_items_json,
                     platform_message_id,
+                    source,
                     1 if observed else 0,
                 ),
             )
@@ -3556,8 +3559,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, source, observed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3574,6 +3577,7 @@ class SessionDB:
                     codex_items_json,
                     codex_message_items_json,
                     platform_msg_id,
+                    msg.get("_source"),
                     1 if msg.get("observed") else 0,
                 ),
             )
@@ -3726,6 +3730,15 @@ class SessionDB:
             msg = dict(row)
             if "content" in msg:
                 msg["content"] = self._decode_content(msg["content"])
+            # Surface the persisted source column under the in-memory "_source"
+            # key so transcript-rewrite/branch/fork flows (replace_messages →
+            # _insert_message_rows) inherit the original source verbatim —
+            # real stays real, compaction-replay stays compaction-replay —
+            # instead of collapsing everything to NULL (which would let
+            # /retry /undo /branch launder replay rows past --no-compaction).
+            # "_source" matches ContextCompressor.REPLAY_SOURCE_METADATA_KEY.
+            if msg.get("source"):
+                msg["_source"] = msg["source"]
             if msg.get("tool_calls"):
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
@@ -4046,7 +4059,7 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed, source, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -4066,6 +4079,12 @@ class SessionDB:
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            # Inherit the persisted source under the in-memory "_source" key so
+            # downstream rewrite/branch flows (rewrite_transcript →
+            # replace_messages → _insert_message_rows) carry it through
+            # verbatim. Matches ContextCompressor.REPLAY_SOURCE_METADATA_KEY.
+            if row["source"]:
+                msg["_source"] = row["source"]
             if row["timestamp"]:
                 msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:

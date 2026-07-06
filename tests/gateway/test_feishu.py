@@ -2580,10 +2580,15 @@ class TestAdapterBehavior(unittest.TestCase):
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        payload = json.loads(adapter._build_post_payload("# 标题\n访问 [文档](https://example.com)"))
+        # H1 gets downgraded to #### by optimize_markdown_style (port from
+        # lark-cli). The link itself is left untouched because Feishu renders
+        # markdown links natively in tag:"md".
+        payload = json.loads(
+            adapter._build_post_payload("# 标题\n访问 [文档](https://example.com)")
+        )
 
         elements = payload["zh_cn"]["content"][0]
-        self.assertEqual(elements, [{"tag": "md", "text": "# 标题\n访问 [文档](https://example.com)"}])
+        self.assertEqual(elements, [{"tag": "md", "text": "#### 标题\n访问 [文档](https://example.com)"}])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_wraps_markdown_in_md_tag(self):
@@ -5051,3 +5056,106 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuMarkdownTableRendering(unittest.TestCase):
+    """Regression tests for the markdown table rendering fix.
+
+    The historical bug: ``_build_outbound_payload`` demoted any message with a
+    markdown table to ``msg_type=text`` with the raw markdown string, so users
+    saw literal ``|`` and ``---`` instead of a rendered table. lark-cli sends
+    raw table markdown inside ``tag:"md"`` and Feishu renders it natively, so
+    the table short-circuit was removed and the table detection moved into
+    ``_MARKDOWN_HINT_RE`` instead.
+    """
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_routes_table_through_post(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload = adapter._build_outbound_payload(
+            "## Status\n\n| A | B |\n| - | - |\n| 1 | 2 |\n"
+        )
+        self.assertEqual(msg_type, "post")
+        decoded = json.loads(payload)
+        text = decoded["zh_cn"]["content"][0][0]["text"]
+        self.assertIn("| A | B |", text)
+        self.assertIn("| 1 | 2 |", text)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_routes_table_only_through_post(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload = adapter._build_outbound_payload(
+            "| A | B |\n| - | - |\n| 1 | 2 |\n"
+        )
+        self.assertEqual(msg_type, "post")
+        decoded = json.loads(payload)
+        text = decoded["zh_cn"]["content"][0][0]["text"]
+        self.assertIn("| A | B |", text)
+
+    def test_optimize_markdown_style_heading_downgrade(self):
+        from plugins.platforms.feishu.adapter import optimize_markdown_style
+
+        out = optimize_markdown_style("# Title\n## Section\ntext")
+        self.assertEqual(out, "#### Title\n\n##### Section\ntext")
+
+    def test_optimize_markdown_style_no_downgrade_without_h1_h3(self):
+        from plugins.platforms.feishu.adapter import optimize_markdown_style
+
+        out = optimize_markdown_style("#### Already H4\ntext")
+        self.assertEqual(out, "#### Already H4\ntext")
+
+    def test_optimize_markdown_style_table_spacing(self):
+        from plugins.platforms.feishu.adapter import optimize_markdown_style
+
+        out = optimize_markdown_style("text\n| A | B |\n| - | - |\n| 1 | 2 |\nafter")
+        # A blank line must be inserted between "text" and the table.
+        self.assertIn("text\n\n| A | B |", out)
+        # A blank line must also precede "after".
+        self.assertIn("| 1 | 2 |\n\nafter", out)
+
+    def test_optimize_markdown_style_preserves_code_block_headings(self):
+        from plugins.platforms.feishu.adapter import optimize_markdown_style
+
+        out = optimize_markdown_style("# Title\n```\n# not a heading\n```\ntext")
+        # H1 in the body still downgrades; the # inside the fenced block is untouched.
+        self.assertIn("#### Title", out)
+        self.assertIn("# not a heading", out)
+        self.assertNotIn("#### not a heading", out)
+
+    def test_build_markdown_post_payload_downgrades_headings(self):
+        from plugins.platforms.feishu.adapter import _build_markdown_post_payload
+
+        out = _build_markdown_post_payload("# Title\nbody")
+        self.assertIn("#### Title", out)
+        self.assertNotIn("\n# Title", out)
+
+    def test_build_markdown_post_payload_keeps_table_intact(self):
+        from plugins.platforms.feishu.adapter import _build_markdown_post_payload
+
+        out = _build_markdown_post_payload("| A | B |\n| - | - |\n| 1 | 2 |")
+        self.assertIn("| A | B |", out)
+        self.assertIn("| - | - |", out)
+        self.assertIn("| 1 | 2 |", out)
+
+    def test_build_markdown_post_payload_strips_non_img_image_refs(self):
+        from plugins.platforms.feishu.adapter import _build_markdown_post_payload
+
+        out = _build_markdown_post_payload("![ok](img_abc123) ![bad](https://example.com/x.png)")
+        # img_xxx refs survive; raw URL refs get stripped.
+        self.assertIn("img_abc123", out)
+        self.assertNotIn("https://example.com/x.png", out)
+
+    def test_build_markdown_post_payload_compresses_excess_newlines(self):
+        from plugins.platforms.feishu.adapter import _build_markdown_post_payload
+
+        out = _build_markdown_post_payload("a\n\n\n\nb")
+        self.assertEqual(
+            out,
+            '{"zh_cn": {"content": [[{"tag": "md", "text": "a\\n\\nb"}]]}}',
+        )

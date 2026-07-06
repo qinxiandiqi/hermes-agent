@@ -154,7 +154,7 @@ from agent.model_metadata import (
 )
 from agent.usage_pricing import normalize_usage
 # Re-exported for tests that monkeypatch these symbols on run_agent.
-from agent.context_compressor import ContextCompressor  # noqa: F401
+from agent.context_compressor import ContextCompressor, REPLAY_SOURCE_METADATA_KEY  # noqa: F401
 from agent.retry_utils import jittered_backoff  # noqa: F401
 from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock.patch("run_agent.<name>") / from run_agent import <name>
     DEFAULT_AGENT_IDENTITY,
@@ -1874,6 +1874,7 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=_row_timestamp,
+                    source=msg.get(REPLAY_SOURCE_METADATA_KEY) or "real",
                 )
                 msg[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the

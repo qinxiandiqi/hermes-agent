@@ -139,6 +139,9 @@ RELEASE_v*.md
 # walkthroughs). Throwaway artifacts, never part of the app.
 apps/desktop/demo/
 
+# Local symlink to an external TencentDB memory plugin (lives outside the repo).
+plugins/memory/memory_tencentdb
+
 # PR infographics are rendered locally and embedded in PR descriptions via the
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The
 # PR body is the archive. See the hermes-agent-dev skill's

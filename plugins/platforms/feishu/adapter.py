@@ -152,17 +152,30 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)|(^\|.+\|)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Tables count as a markdown hint and flow through the post path. lark-cli
+# sends raw table markdown inside tag:"md" and Feishu renders it natively;
+# the earlier "post tag:md does not support tables" assumption was wrong.
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
+# Regex set for optimize_markdown_style — ported from lark-cli
+# (shortcuts/im/helpers.go: optimizeMarkdownStyle). Heading downgrades and
+# table-spacing normalizations make raw markdown render more reliably inside
+# the Feishu post tag:"md" renderer.
+_RE_H2_TO_H6 = re.compile(r"(?m)^#{2,6} (.+)$")
+_RE_H1 = re.compile(r"(?m)^# (.+)$")
+_RE_HAS_H1_H3 = re.compile(r"(?m)^#{1,3} ")
+_RE_CONSEC_H = re.compile(r"(?m)^(#{4,5} .+)\n{1,2}(#{4,5} )")
+_RE_TABLE_GAP = re.compile(r"(?m)^([^|\n].*)\n(\|.+\|)")
+_RE_TABLE_AFTER = re.compile(r"(?m)((?:^\|.+\|[^\S\n]*\n?)+)")
+_RE_EXCESS_NL = re.compile(r"\n{3,}")
+_RE_INVALID_IMG = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
+_RE_CODE_BLOCK_MD = re.compile(r"```[\s\S]*?```")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
@@ -543,6 +556,46 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     return plain
 
 
+def optimize_markdown_style(text: str) -> str:
+    """Normalize markdown for Feishu post tag:"md" rendering.
+
+    Ported from lark-cli's ``shortcuts/im/helpers.go: optimizeMarkdownStyle``.
+    Steps:
+      1. Extract fenced code blocks behind placeholders so they survive rewriting.
+      2. Downgrade headings (H1 → ``####``, H2-H6 → ``#####``), but only when
+         the original text contains H1-H3. Feishu's post renderer treats
+         ``####``/``#####`` as the canonical heading depths.
+      3. Insert a blank line before any table that is glued to preceding
+         prose, and ensure a trailing newline after the table block.
+      4. Compress three-or-more consecutive newlines down to two.
+      5. Strip markdown image refs whose URL does not start with ``img_``
+         (Feishu's post renderer cannot resolve raw URLs without an upload).
+    """
+    if not text:
+        return text
+    code_blocks: List[str] = []
+    mark = "___CB_"
+    r = _RE_CODE_BLOCK_MD.sub(
+        lambda m: code_blocks.append(m.group(0)) or f"{mark}{len(code_blocks) - 1}___",
+        text,
+    )
+    if _RE_HAS_H1_H3.search(text):
+        r = _RE_H2_TO_H6.sub(r"##### \1", r)
+        r = _RE_H1.sub(r"#### \1", r)
+    r = _RE_CONSEC_H.sub(r"\1\n\n\2", r)
+    r = _RE_TABLE_GAP.sub(r"\1\n\n\2", r)
+    r = _RE_TABLE_AFTER.sub(r"\1\n", r)
+    for i, block in enumerate(code_blocks):
+        r = r.replace(f"{mark}{i}___", block, 1)
+    r = _RE_EXCESS_NL.sub(r"\n\n", r)
+    if "![" in r:
+        r = _RE_INVALID_IMG.sub(
+            lambda m: m.group(0) if m.group(1).startswith("img_") else "",
+            r,
+        )
+    return r
+
+
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
     """Coerce value to int with optional default and minimum constraint."""
     try:
@@ -563,7 +616,8 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 def _build_markdown_post_payload(content: str) -> str:
-    rows = _build_markdown_post_rows(content)
+    optimized = optimize_markdown_style(content)
+    rows = _build_markdown_post_rows(optimized)
     return json.dumps(
         {
             "zh_cn": {
@@ -4522,12 +4576,6 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

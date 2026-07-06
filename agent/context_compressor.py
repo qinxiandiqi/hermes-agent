@@ -125,6 +125,17 @@ def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
             msg.pop(_DB_PERSISTED_MARKER, None)
 
 
+# Metadata key/value stamped on every message in the `compressed` list
+# (head + summary + tail) so that downstream persistence can tag it as a
+# compaction replay when writing to state.db. Underscore-prefixed for the
+# same wire-safety reason as COMPRESSED_SUMMARY_METADATA_KEY (stripped by
+# the transport sanitizers before the request leaves the process).
+# Read by run_agent._flush_messages_to_session_db and written to the
+# `messages.source` column ("compaction-replay"); absent on real new-turn
+# messages, which get source="real" instead.
+REPLAY_SOURCE_METADATA_KEY = "_source"
+REPLAY_SOURCE_VALUE = "compaction-replay"
+
 # Appended to every standalone summary message (and to the merged-into-tail
 # prefix) so the model has an unambiguous "summary ends here" boundary.
 # Without it, weak models read the verbatim "## Active Task" quote as fresh
@@ -2875,6 +2886,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         compressed = []
         for i in range(compress_start):
             msg = _fresh_compaction_message_copy(messages[i])
+            msg[REPLAY_SOURCE_METADATA_KEY] = REPLAY_SOURCE_VALUE
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")
                 _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
@@ -2971,10 +2983,12 @@ This compaction should PRIORITISE preserving all information related to the focu
                 "role": summary_role,
                 "content": summary,
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
+                REPLAY_SOURCE_METADATA_KEY: REPLAY_SOURCE_VALUE,
             })
 
         for i in range(compress_end, n_messages):
             msg = _fresh_compaction_message_copy(messages[i])
+            msg[REPLAY_SOURCE_METADATA_KEY] = REPLAY_SOURCE_VALUE
             if _merge_summary_into_tail and i == compress_end:
                 # Merge the summary into the first tail message, but place
                 # the END MARKER at the very end so the model sees an
