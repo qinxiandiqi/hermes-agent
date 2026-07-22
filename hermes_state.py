@@ -4192,7 +4192,7 @@ class SessionDB:
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, source, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -4286,7 +4286,7 @@ class SessionDB:
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, source, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -4549,6 +4549,11 @@ class SessionDB:
             msg = dict(row)
             if "content" in msg:
                 msg["content"] = self._decode_content(msg["content"])
+            # Mirror get_messages: surface persisted source as in-memory _source
+            # so rewrite flows that round-trip through this reader don't drop
+            # the replay tag (matches ContextCompressor.REPLAY_SOURCE_METADATA_KEY).
+            if msg.get("source"):
+                msg["_source"] = msg["source"]
             if msg.get("tool_calls"):
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
@@ -4671,6 +4676,11 @@ class SessionDB:
             msg = dict(row)
             if "content" in msg:
                 msg["content"] = self._decode_content(msg["content"])
+            # Mirror get_messages: surface persisted source as in-memory _source
+            # so any downstream rewrite flow doesn't drop the replay tag
+            # (matches ContextCompressor.REPLAY_SOURCE_METADATA_KEY).
+            if msg.get("source"):
+                msg["_source"] = msg["source"]
             if msg.get("tool_calls"):
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
