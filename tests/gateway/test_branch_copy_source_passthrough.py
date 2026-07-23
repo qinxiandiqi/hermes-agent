@@ -144,11 +144,14 @@ async def test_branch_copy_strict_passthrough_no_or_real_fallback(
 
 
 # (file_relative_to_repo, inclusive_start_line, inclusive_end_line)
+# Line windows anchored on ``source=msg.get("_source")`` after the
+# upstream-main merge (1198 commits absorbed). Each window is 16 lines
+# wide to comfortably contain the call site + surrounding kwargs.
 _BRANCH_COPY_LINES = {
-    "gateway/slash_commands.py": (4060, 4086),
-    "hermes_cli/cli_commands_mixin.py": (942, 963),
-    "tui_gateway/server.py": (1988, 2003),
-    "tui_gateway/server.py": (8488, 8501),
+    "gateway/slash_commands.py": (4164, 4180),
+    "hermes_cli/cli_commands_mixin.py": (965, 981),
+    "tui_gateway/server.py": (2120, 2144),
+    "tui_gateway/server.py": (9505, 9520),
 }
 
 
