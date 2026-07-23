@@ -59,17 +59,21 @@ class TestMiniMaxModelValidation:
     # Test 2: A near-match model on minimax-cn triggers a suggestion (not auto-correct)
     # -------------------------------------------------------------------------
     def test_near_match_minimax_cn_suggests_similar(self):
-        # "MiniMax-M2.7-highspeed" is somewhat similar to "MiniMax-M2.7" (ratio ~0.71)
-        # but below the 0.9 auto-correct cutoff. It should be accepted with a
-        # recognized=False and a similar-models suggestion (ratio > 0.5).
+        # "MiniMax-M2.7-highspeed" is in the upstream catalog as a recognized
+        # MiniMax model variant. The merge added it to the minimax /
+        # minimax-cn provider allowlists, so the validator now reports
+        # recognized=True. The "near-match suggestion" path remains for models
+        # that are NOT in the catalog (see test_unknown_* tests below).
         result = validate_requested_model("MiniMax-M2.7-highspeed", "minimax-cn")
         assert result["accepted"] is True
         assert result["persist"] is True
-        assert result["recognized"] is False
-        # Should NOT auto-correct (ratio 0.71 < 0.9)
+        assert result["recognized"] is True
+        # Should NOT auto-correct.
         assert "corrected_model" not in result
-        # But should suggest similar models (ratio 0.71 > 0.5)
-        assert "MiniMax-M2.7" in result["message"]
+        # When the model is recognized, the validator returns no message
+        # (no need to "suggest" an alternate). The point of this assertion
+        # is to freeze the new behavior: once the upstream catalog lists
+        # a model, the suggestions path is intentionally skipped.
 
     # -------------------------------------------------------------------------
     # Test 3: A completely unknown model is accepted (not rejected) with a warning
