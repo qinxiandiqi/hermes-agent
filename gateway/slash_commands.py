@@ -4072,6 +4072,15 @@ class GatewaySlashCommandsMixin:
                     reasoning_details=msg.get("reasoning_details"),
                     codex_reasoning_items=msg.get("codex_reasoning_items"),
                     codex_message_items=msg.get("codex_message_items"),
+                    # Preserve the parent session's source marker so the
+                    # branch child respects anti-laundering semantics.
+                    # history[] here comes from get_messages_as_conversation
+                    # which carries ``_source`` on each row that had a
+                    # non-empty ``source`` column. Missing ``_source``
+                    # (e.g. metadata rows stripped by loader) stays NULL
+                    # on the branch side, matching the parent.
+                    source=msg.get("_source"),
+                    timestamp=msg.get("timestamp"),
                 )
             except Exception:
                 pass  # Best-effort copy

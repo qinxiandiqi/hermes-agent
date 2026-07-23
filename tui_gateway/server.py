@@ -1987,7 +1987,19 @@ def _persist_branch_seed(session: dict) -> None:
             return
         try:
             for msg in seed:
-                db.append_message(session_id=key, role=msg.get("role", "user"), content=msg.get("content"))
+                # Strictly forward ``_source`` / ``timestamp`` if upstream
+                # provided them through ``_coerce_seed_history``. Missing
+                # keys ⇒ db layer sees None ⇒ writes NULL/default, matching
+                # the pre-fix behaviour. This keeps the branch seed in sync
+                # with anti-laundering semantics when the client supplies
+                # full message dicts.
+                db.append_message(
+                    session_id=key,
+                    role=msg.get("role", "user"),
+                    content=msg.get("content"),
+                    source=msg.get("_source"),
+                    timestamp=msg.get("timestamp"),
+                )
             session["_branch_seed_persisted"] = True
         except Exception:
             logger.debug("branch seed persist failed", exc_info=True)
@@ -5334,7 +5346,17 @@ def _coerce_seed_history(value: Any) -> list[dict]:
         if not isinstance(content, str) or not content.strip():
             continue
 
-        history.append({"role": role, "content": content})
+        entry: dict = {"role": role, "content": content}
+        # Pass through branch-copy metadata when the upstream client supplied
+        # it. Missing keys ⇒ entry drops them ⇒ downstream append_message
+        # writes NULL/default — matches the pre-fix behaviour and stays
+        # backward-compatible with callers that send only role+content.
+        if item.get("_source"):
+            entry["_source"] = item["_source"]
+        if item.get("timestamp") is not None:
+            entry["timestamp"] = item["timestamp"]
+
+        history.append(entry)
 
     return history
 
@@ -8464,10 +8486,18 @@ def _(rid, params: dict) -> dict:
             cwd=_session_cwd(session),
         )
         for msg in history:
+            # Strict pass-through of the in-memory ``_source`` and
+            # ``timestamp`` fields. ``session["history"]`` here is fed by
+            # the agent's reply stream (run_agent._flush_messages_to_session_db)
+            # and carries ``_source`` on rows the agent preserved; missing
+            # keys ⇒ db layer defaults to NULL/time.time(), preserving the
+            # pre-fix behaviour for callers that only supply role+content.
             db.append_message(
                 session_id=new_key,
                 role=msg.get("role", "user"),
                 content=msg.get("content"),
+                source=msg.get("_source"),
+                timestamp=msg.get("timestamp"),
             )
         db.set_session_title(new_key, title)
     except Exception as e:

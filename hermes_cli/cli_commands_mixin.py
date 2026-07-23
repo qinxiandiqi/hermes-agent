@@ -950,6 +950,14 @@ class CLICommandsMixin:
                     tool_calls=msg.get("tool_calls"),
                     tool_call_id=msg.get("tool_call_id"),
                     reasoning=msg.get("reasoning"),
+                    # Preserve the in-memory ``_source`` marker (if any) so the
+                    # branch child carries the same anti-laundering tag as the
+                    # parent row. CLI's conversation_history is built by
+                    # run_agent.py and may or may not carry ``_source`` per
+                    # row; missing key ⇒ DB NULL, which downstream flushes
+                    # back-fill on the next agent turn.
+                    source=msg.get("_source"),
+                    timestamp=msg.get("timestamp"),
                 )
             except Exception:
                 pass  # Best-effort copy

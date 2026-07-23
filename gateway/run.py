@@ -12566,6 +12566,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_entry.session_id,
                         _user_entry,
                         skip_db=agent_persisted,
+                        # Failed-turn user fallback writes a live user turn
+                        # the agent did not get to flush — mark as ``real``
+                        # so downstream anti-laundering sees a definite
+                        # "user said this" intent rather than an unmarked
+                        # replay.
+                        source="real",
                     )
             else:
                 history_len = agent_result.get("history_offset", len(history))
@@ -12592,12 +12598,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_entry.session_id,
                         _user_entry,
                         skip_db=agent_persisted,
+                        # Live user turn not flushed by the agent this path —
+                        # mark as ``real`` to keep anti-laundering correct.
+                        source="real",
                     )
                     if response:
                         await self.async_session_store.append_to_transcript(
                             session_entry.session_id,
                             {"role": "assistant", "content": response, "timestamp": ts},
                             skip_db=agent_persisted,
+                            # Companion assistant turn to the no-new-messages
+                            # user fallback above — also a live reply.
+                            source="real",
                         )
                 else:
                     # Attach the inbound platform message_id to the first user
@@ -12622,6 +12634,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self.async_session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
+                            # Main-conversation row written because the
+                            # agent did not flush (or returned
+                            # agent_persisted=False). The role filter above
+                            # already drops ``system``; user/assistant/tool
+                            # rows here are all live turns ⇒ ``real``.
+                            source="real",
                         )
             
             # Token counts and model are now persisted by the agent directly.
@@ -12770,6 +12788,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await self.async_session_store.append_to_transcript(
                             session_entry.session_id,
                             _user_entry,
+                            # Crash-resilience fallback written before the
+                            # agent even started ``conversation_loop``. The
+                            # message is the original inbound user turn —
+                            # mark as ``real`` so the transcript still
+                            # reflects anti-laundering reality.
+                            source="real",
                         )
             except Exception:
                 logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)

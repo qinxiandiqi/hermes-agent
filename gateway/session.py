@@ -2500,7 +2500,13 @@ class SessionStore:
             entry = self._entries.get(session_key)
             return getattr(entry, "session_id", None) if entry else None
     
-    def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
+    def append_to_transcript(
+        self,
+        session_id: str,
+        message: Dict[str, Any],
+        skip_db: bool = False,
+        source: Optional[str] = None,
+    ) -> None:
         """Append a message to a session's transcript (SQLite).
 
         Args:
@@ -2508,12 +2514,26 @@ class SessionStore:
                      already persisted messages to SQLite via its own
                      _flush_messages_to_session_db(), preventing the
                      duplicate-write bug (#860).
+            source: Optional explicit source marker (e.g. "real" for live
+                    conversation rows). When set, it is merged into the
+                    pending message dict so _append_transcript_message
+                    forwards it to the session DB ``messages.source`` column.
+                    Leaving it None preserves the legacy "metadata row,
+                    source=NULL" semantics (see merge note ba37dff23).
         """
         if not self._db or skip_db:
             return
         with self._transcript_retry_lock:
             pending = self._dirty_transcripts.setdefault(session_id, [])
-            pending.append(dict(message))
+            # Strip any caller-set ``source`` first so the explicit kwarg
+            # wins, then merge. ``dict(message)`` keeps the caller dict
+            # untouched for later FTS / replay consumers that re-walk it.
+            msg_for_queue = dict(message)
+            if source is not None:
+                msg_for_queue["source"] = source
+            elif "source" in msg_for_queue:
+                msg_for_queue.pop("source", None)
+            pending.append(msg_for_queue)
             # Cap pending messages per session to avoid unbounded memory
             # growth when the DB is persistently broken. Drop the oldest.
             if len(pending) > self._MAX_PENDING_PER_SESSION:
@@ -2582,6 +2602,7 @@ class SessionStore:
             platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
             observed=bool(message.get("observed")),
             timestamp=message.get("timestamp"),
+            source=message.get("source"),
         )
 
     # Maximum in-memory pending messages per session before dropping the
