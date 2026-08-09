@@ -4624,6 +4624,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             })
 
         for tail_idx, msg in enumerate(tail_messages):
+            # Stamp every tail replica as a compaction replay (head/summary
+            # already carry this; tail was dropped by the c656bec9e merge).
+            msg[REPLAY_SOURCE_METADATA_KEY] = REPLAY_SOURCE_VALUE
             if _merge_summary_into_tail and tail_idx == 0:
                 # Merge the summary into the first (post-strip) tail message.
                 # Merge the summary into the first tail message, but place
